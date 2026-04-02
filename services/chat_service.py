@@ -1,76 +1,94 @@
 import anthropic
+from openai import AsyncOpenAI
 from typing import AsyncGenerator
 
-from config.db import chats_collection, transcript_collection
+from config.db import chats_collection
+from config.chroma import chroma_client
+from services.usage_service import add_anthropic_usage, add_openai_usage
 
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1024
-
-# ~4 chars per token; leave ample room for conversation history and response
-MAX_TRANSCRIPT_CHARS = 120_000
+TOP_K_CHUNKS = 3
 
 # Budget for Q&A history sent to Claude (~15k tokens).
 # MongoDB stores the full history; only the trimmed window goes to the API.
 MAX_HISTORY_CHARS = 60_000
 
-client = anthropic.AsyncAnthropic()
+claude_client = anthropic.AsyncAnthropic()
+openai_client = AsyncOpenAI()
 
-SYSTEM_PERSONA = """You are Askube, an intelligent video assistant with deep expertise in the content of the video transcript provided to you.
+SYSTEM_PERSONA = """You are Askube, an intelligent video assistant.
 
-Your role:
-- Develop thorough knowledge and understanding of the entire video content.
-- Answer any question a user has about the video — summaries, specific moments, themes, speaker intent, explanations, comparisons, etc.
-- For timestamp-based questions (e.g. "what happens between 2:24 and 2:38?"), locate the relevant segments from the transcript using the start times and answer precisely.
-- If the user asks for a summary, provide a concise but comprehensive overview of the video.
+Answer the user's question based ONLY on the transcript excerpts provided below.
+When referencing specific moments, include the timestamp shown.
+If the answer is not in the excerpts, say: "I couldn't find that in the video. Try rephrasing your question."
 
 Strict scope rule:
 - If a question is NOT related to the video content, politely decline and say:
-  "That question seems to be outside the scope of this video. I can only answer questions related to the video content. Feel free to ask me anything about the video!"
+  "That question seems to be outside the scope of this video. Feel free to ask me anything about the video!"
 
-Tone: Friendly, clear, and informative. Keep answers concise but complete.
+Tone: Friendly, clear, and concise.
 
---- VIDEO TRANSCRIPT ---
-{transcript_text}
---- END OF TRANSCRIPT ---
+--- RELEVANT TRANSCRIPT EXCERPTS ---
+{context}
+--- END OF EXCERPTS ---
 """
 
+REWRITE_PROMPT = """Given the conversation history below, rewrite the latest user question as a short, standalone search phrase that captures the actual topic. Use words likely to appear in a spoken video transcript. Output ONLY the rewritten query, nothing else.
 
-def _format_transcript(transcript: list[dict]) -> str:
+Conversation history:
+{history}
+
+Latest question: {question}"""
+
+
+async def _rewrite_query(user_q: str, qa_history: list[dict], cs_id: str) -> str:
+    """Rewrite follow-up questions into standalone search phrases using last 6 messages."""
+    history_text = "\n".join(
+        f"{m['role']}: {m['content']}" for m in qa_history[-6:]
+    )
+    response = await claude_client.messages.create(
+        model=MODEL,
+        max_tokens=100,
+        messages=[{"role": "user", "content": REWRITE_PROMPT.format(
+            history=history_text,
+            question=user_q,
+        )}],
+    )
+    await add_anthropic_usage(cs_id, response.usage.input_tokens, response.usage.output_tokens)
+    rewritten = response.content[0].text.strip()
+    print(f"Query rewrite: {user_q!r} → {rewritten!r}")
+    return rewritten
+
+
+async def _retrieve_chunks(v_id: str, query: str, cs_id: str) -> str:
+    """Embed query and retrieve top-K semantically similar chunks from ChromaDB."""
+    response = await openai_client.embeddings.create(
+        input=[query],
+        model="text-embedding-3-small",
+    )
+    await add_openai_usage(cs_id, response.usage.total_tokens)
+    query_vector = response.data[0].embedding
+
+    collection = chroma_client.get_collection(f"video_{v_id}")
+    results = collection.query(
+        query_embeddings=[query_vector],
+        n_results=TOP_K_CHUNKS,
+        include=["documents", "metadatas"],
+    )
+
     lines = []
-    for snippet in transcript:
-        start = snippet.get("start", 0)
-        minutes = int(start // 60)
-        seconds = int(start % 60)
-        timestamp = f"{minutes:02d}:{seconds:02d}"
-        text = snippet.get("text", "").strip()
-        if text:
-            lines.append(f"[{timestamp}] {text}")
-    return "\n".join(lines)
-
-
-def _chunk_transcript(transcript: list[dict]) -> str:
-    full_text = _format_transcript(transcript)
-    if len(full_text) <= MAX_TRANSCRIPT_CHARS:
-        return full_text
-
-    truncated = full_text[:MAX_TRANSCRIPT_CHARS]
-    last_newline = truncated.rfind("\n")
-    if last_newline != -1:
-        truncated = truncated[:last_newline]
-    truncated += "\n[Transcript truncated due to length]"
-    return truncated
+    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+        lines.append(f"[{meta['timestamp']}] {doc}")
+    return "\n\n".join(lines)
 
 
 def _trim_qa_history(qa_history: list[dict]) -> list[dict]:
-    """
-    Drop oldest user/assistant pairs until total character count is within
-    MAX_HISTORY_CHARS. The last entry (the new user question) is never dropped.
-    """
+    """Drop oldest user/assistant pairs until within MAX_HISTORY_CHARS. Never drops last entry."""
     while len(qa_history) > 1:
         total = sum(len(str(m["content"])) for m in qa_history)
         if total <= MAX_HISTORY_CHARS:
             break
-        # Drop the oldest pair (user at [0], assistant at [1])
         qa_history = qa_history[2:]
     return qa_history
 
@@ -81,45 +99,46 @@ async def get_chat_session(cs_id: str, v_id: str) -> dict | None:
 
 async def stream_chat_response(cs_id: str, v_id: str, user_q: str) -> AsyncGenerator[str, None]:
     """
-    Streams the assistant reply for a given chat session.
-    Persists both the user message and the final assistant reply to chats_data.
-    Caller must verify the session exists before calling this.
+    RAG pipeline:
+      1. Load conversation history from MongoDB.
+      2. Rewrite query if history exists, else use raw query.
+      3. Embed query → retrieve top-K chunks from ChromaDB.
+      4. Stream Claude response with retrieved chunks as context.
+      5. Persist user message and assistant reply to MongoDB.
     """
     chat_session = await chats_collection.find_one({"cs_id": cs_id, "v_id": v_id})
+    qa_history = chat_session["past_conversation"]
 
-    transcript_doc = await transcript_collection.find_one(
-        {"video_id": v_id}, {"_id": 0, "transcript": 1}
-    )
-    transcript_text = _chunk_transcript(transcript_doc["transcript"])
-    system_prompt = SYSTEM_PERSONA.format(transcript_text=transcript_text)
+    # Step 1: rewrite if follow-up, use raw query for first message
+    search_query = await _rewrite_query(user_q, qa_history, cs_id) if qa_history else user_q
 
-    # past_conversation[0] = initial user upload (transcript data)
-    # past_conversation[1] = assistant acknowledgement
-    # past_conversation[2:] = actual Q&A history
-    qa_history = [
-        {"role": entry["role"], "content": entry["content"]}
-        for entry in chat_session["past_conversation"][2:]
-    ]
-    qa_history.append({"role": "user", "content": user_q})
-    qa_history = _trim_qa_history(qa_history)
+    # Step 2: retrieve relevant chunks
+    context = await _retrieve_chunks(v_id, search_query, cs_id)
+    system_prompt = SYSTEM_PERSONA.format(context=context)
 
-    # Persist user message immediately
+    # Step 3: build messages for Claude (trim to token budget)
+    messages = _trim_qa_history(list(qa_history))
+    messages.append({"role": "user", "content": user_q})
+
+    # Persist user message
     await chats_collection.update_one(
         {"cs_id": cs_id, "v_id": v_id},
         {"$push": {"past_conversation": {"role": "user", "content": user_q}}}
     )
 
-    # Stream response and collect for persistence
+    # Step 4: stream Claude response
     full_response: list[str] = []
-    async with client.messages.stream(
+    async with claude_client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=system_prompt,
-        messages=qa_history,
+        messages=messages,
     ) as stream:
         async for text in stream.text_stream:
             full_response.append(text)
             yield text
+        final = await stream.get_final_message()
+        await add_anthropic_usage(cs_id, final.usage.input_tokens, final.usage.output_tokens)
 
     # Persist assistant reply
     await chats_collection.update_one(

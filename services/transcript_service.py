@@ -5,6 +5,8 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 from config.db import transcript_collection, chats_collection
+from services.embedding_service import embed_and_store
+from services.usage_service import create_usage_entry
 
 
 def parse_youtube_url(url):
@@ -45,15 +47,18 @@ async def fetch_transcript(youtube_url: str) -> tuple[str, str]:
             "transcript": transcript,
         })
 
+    embed_and_store(video_id, transcript)
+
+    # Video length = last entry's start + duration
+    last = transcript[-1]
+    video_length = last["start"] + last.get("duration", 0)
+
     cs_id = _generate_cs_id()
-    initial_conversation = [
-        {"role": "user", "content": transcript},
-        {"role": "assistant", "content": "Thanks for the url, I have analyzed it, you can ask me any questions from this video"},
-    ]
     await chats_collection.insert_one({
         "cs_id": cs_id,
         "v_id": video_id,
-        "past_conversation": initial_conversation,
+        "past_conversation": [],
     })
+    await create_usage_entry(cs_id, video_id, video_length)
 
     return video_id, cs_id

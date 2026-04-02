@@ -5,3 +5,4 @@ db = client["askube"]
 
 transcript_collection = db["transcript_data"]
 chats_collection = db["chats_data"]
+usage_collection = db["usageDashboard"]

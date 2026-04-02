@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Askube — Ask anything about any video</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0a0a0f;
+      --surface:    #111118;
+      --surface2:   #1a1a26;
+      --border:     #ffffff0f;
+      --border2:    #ffffff18;
+      --accent:     #7c6af7;
+      --accent2:    #a78bfa;
+      --accent-glow:#7c6af733;
+      --red:        #f87171;
+      --text:       #e8e8f0;
+      --muted:      #6b6b8a;
+      --user-bg:    #1e1b3a;
+      --user-border:#7c6af740;
+      --ai-bg:      #141420;
+      --radius:     14px;
+      --radius-sm:  8px;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    /* ── LAYOUT ── */
+    .app {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      height: 100vh;
+    }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 28px 22px;
+      gap: 24px;
+      overflow-y: auto;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), #c084fc);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .logo-text { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    .logo-text span { color: var(--accent2); }
+
+    .sidebar-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .url-section { display: flex; flex-direction: column; gap: 8px; }
+
+    .url-input-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      transition: border-color .2s;
+    }
+    .url-input-wrap:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .url-icon {
+      padding: 0 12px;
+      color: var(--muted);
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .url-input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-size: 13px;
+      padding: 11px 12px 11px 0;
+      font-family: inherit;
+    }
+    .url-input::placeholder { color: var(--muted); }
+
+    .analyze-btn {
+      width: 100%;
+      padding: 11px;
+      background: linear-gradient(135deg, var(--accent), #9b6bf7);
+      border: none;
+      border-radius: var(--radius-sm);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: opacity .2s, transform .1s;
+      font-family: inherit;
+    }
+    .analyze-btn:hover { opacity: .9; }
+    .analyze-btn:active { transform: scale(.98); }
+    .analyze-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* status */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 500;
+      display: none;
+    }
+    .status-bar.show { display: flex; }
+    .status-bar.loading { background: #1a1a2e; color: var(--accent2); border: 1px solid var(--accent-glow); }
+    .status-bar.success { background: #0d1f18; color: #4ade80; border: 1px solid #4ade8030; }
+    .status-bar.error   { background: #1f0d0d; color: var(--red);   border: 1px solid #f8717130; }
+
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid var(--accent-glow);
+      border-top-color: var(--accent2);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* video card */
+    .video-card {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius);
+      animation: fadeUp .3s ease;
+    }
+    .video-card.show { display: flex; }
+
+    .video-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      border-radius: var(--radius-sm);
+      object-fit: cover;
+      background: #1a1a26;
+    }
+    .video-id-label {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .video-id-value {
+      font-size: 12px;
+      color: var(--accent2);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      word-break: break-all;
+    }
+    .session-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* tips */
+    .tips { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+    .tip {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .tip-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-top: 5px;
+      flex-shrink: 0;
+    }
+
+    /* ── CHAT AREA ── */
+    .chat-area {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .chat-header {
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+    .chat-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .chat-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .session-badge {
+      font-size: 11px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      padding: 4px 10px;
+      color: var(--muted);
+    }
+
+    /* messages */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      scroll-behavior: smooth;
+    }
+    .messages::-webkit-scrollbar { width: 4px; }
+    .messages::-webkit-scrollbar-track { background: transparent; }
+    .messages::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+    /* empty state */
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      color: var(--muted);
+      text-align: center;
+      padding: 40px;
+    }
+    .empty-icon {
+      font-size: 48px;
+      opacity: .4;
+    }
+    .empty-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text);
+      opacity: .5;
+    }
+    .empty-desc { font-size: 13px; max-width: 320px; line-height: 1.6; }
+
+    /* suggested questions */
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 8px;
+    }
+    .suggestion-chip {
+      padding: 7px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      font-family: inherit;
+    }
+    .suggestion-chip:hover {
+      border-color: var(--accent);
+      background: var(--user-bg);
+      color: var(--accent2);
+    }
+
+    /* message bubbles */
+    .message {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 780px;
+      animation: fadeUp .25s ease;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .message.user { align-self: flex-end; align-items: flex-end; }
+    .message.assistant { align-self: flex-start; align-items: flex-start; }
+
+    .message-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .avatar {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .avatar.user { background: var(--accent); color: #fff; }
+    .avatar.ai   { background: linear-gradient(135deg,#4f46e5,#7c6af7); color: #fff; }
+
+    .bubble {
+      padding: 13px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      line-height: 1.7;
+      max-width: 100%;
+      word-break: break-word;
+    }
+    .message.user .bubble {
+      background: var(--user-bg);
+      border: 1px solid var(--user-border);
+      border-bottom-right-radius: 4px;
+      color: var(--text);
+    }
+    .message.assistant .bubble {
+      background: var(--ai-bg);
+      border: 1px solid var(--border2);
+      border-bottom-left-radius: 4px;
+      color: var(--text);
+    }
+
+    /* ── Markdown content styles ── */
+    .bubble p { margin: 0 0 10px; }
+    .bubble p:last-child { margin-bottom: 0; }
+
+    .bubble h1, .bubble h2, .bubble h3, .bubble h4 {
+      color: var(--text);
+      font-weight: 600;
+      margin: 16px 0 8px;
+      line-height: 1.3;
+    }
+    .bubble h1 { font-size: 17px; }
+    .bubble h2 { font-size: 15px; }
+    .bubble h3 { font-size: 14px; color: var(--accent2); }
+    .bubble h4 { font-size: 13px; color: var(--muted); }
+    .bubble h1:first-child,
+    .bubble h2:first-child,
+    .bubble h3:first-child { margin-top: 0; }
+
+    .bubble ul, .bubble ol {
+      padding-left: 20px;
+      margin: 8px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .bubble li { line-height: 1.6; }
+    .bubble li > ul, .bubble li > ol { margin: 4px 0 0; }
+
+    .bubble strong { font-weight: 600; color: #d4d4f0; }
+    .bubble em { font-style: italic; color: #b8b8d8; }
+
+    /* inline code */
+    .bubble code {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 12.5px;
+      background: #1e1e2e;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #c9d1f9;
+    }
+
+    /* code block */
+    .bubble pre {
+      background: #13131f;
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      margin: 10px 0;
+      overflow: hidden;
+    }
+    .bubble pre code {
+      display: block;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-size: 12.5px;
+      line-height: 1.6;
+      background: none;
+      border: none;
+      border-radius: 0;
+      color: #c9d1f9;
+      white-space: pre;
+    }
+    /* code block header bar */
+    .code-block-wrap { position: relative; }
+    .code-lang-badge {
+      position: absolute;
+      top: 0; left: 0;
+      background: #1e1e30;
+      border-bottom: 1px solid var(--border2);
+      border-right: 1px solid var(--border2);
+      border-radius: var(--radius-sm) 0 var(--radius-sm) 0;
+      padding: 3px 10px;
+      font-size: 10px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--muted);
+      text-transform: lowercase;
+      letter-spacing: 0.05em;
+    }
+    .code-block-wrap pre code { padding-top: 28px; }
+
+    .bubble blockquote {
+      border-left: 3px solid var(--accent);
+      margin: 10px 0;
+      padding: 6px 14px;
+      background: var(--surface2);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      color: #b0b0cc;
+      font-style: italic;
+    }
+
+    .bubble hr {
+      border: none;
+      border-top: 1px solid var(--border2);
+      margin: 12px 0;
+    }
+
+    .bubble table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+    .bubble th, .bubble td {
+      border: 1px solid var(--border2);
+      padding: 7px 12px;
+      text-align: left;
+    }
+    .bubble th {
+      background: var(--surface2);
+      font-weight: 600;
+      color: var(--accent2);
+    }
+    .bubble tr:nth-child(even) td { background: #0f0f1a; }
+
+    /* timestamp tags inside assistant reply */
+    .bubble .ts {
+      display: inline-block;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 11px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--accent2);
+      margin: 0 2px;
+    }
+
+    /* typing indicator */
+    .typing-indicator {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 14px 16px;
+      background: var(--ai-bg);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius);
+      border-bottom-left-radius: 4px;
+      width: fit-content;
+    }
+    .typing-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: bounce .9s ease-in-out infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: .15s; }
+    .typing-dot:nth-child(3) { animation-delay: .3s; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); opacity: .5; }
+      30% { transform: translateY(-6px); opacity: 1; }
+    }
+
+    /* input bar */
+    .input-bar {
+      padding: 18px 28px 22px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .input-wrap {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius);
+      padding: 10px 12px 10px 16px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .input-wrap:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .chat-input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      max-height: 120px;
+      min-height: 24px;
+      line-height: 1.5;
+      overflow-y: auto;
+    }
+    .chat-input::placeholder { color: var(--muted); }
+    .chat-input::-webkit-scrollbar { width: 3px; }
+    .chat-input::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+    .send-btn {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), #9b6bf7);
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: opacity .2s, transform .1s;
+      font-size: 15px;
+    }
+    .send-btn:hover { opacity: .9; }
+    .send-btn:active { transform: scale(.93); }
+    .send-btn:disabled { opacity: .3; cursor: not-allowed; }
+
+    .input-hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 8px;
+      padding-left: 2px;
+    }
+
+    /* locked state */
+    .chat-locked {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--muted);
+      text-align: center;
+      padding: 40px;
+    }
+    .lock-icon { font-size: 36px; opacity: .3; }
+    .lock-text { font-size: 14px; max-width: 260px; line-height: 1.6; }
+
+    /* scrollbar */
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+    /* responsive */
+    @media (max-width: 700px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── SIDEBAR ── -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">▶</div>
+      <div class="logo-text">ask<span>ube</span></div>
+    </div>
+
+    <div class="url-section">
+      <div class="sidebar-label">YouTube URL</div>
+      <div class="url-input-wrap">
+        <span class="url-icon">⌁</span>
+        <input
+          class="url-input"
+          id="urlInput"
+          type="text"
+          placeholder="https://youtube.com/watch?v=..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <button class="analyze-btn" id="analyzeBtn" onclick="analyzeVideo()">
+        Analyze Video
+      </button>
+      <div class="status-bar" id="statusBar">
+        <div class="spinner" id="statusSpinner"></div>
+        <span id="statusText"></span>
+      </div>
+    </div>
+
+    <div class="video-card" id="videoCard">
+      <img class="video-thumb" id="videoThumb" src="" alt="thumbnail" />
+      <div class="session-row">
+        <div class="video-id-label">Video ID</div>
+        <div class="video-id-value" id="videoIdDisplay">—</div>
+      </div>
+      <div class="session-row">
+        <div class="video-id-label">Session ID</div>
+        <div class="video-id-value" id="sessionIdDisplay">—</div>
+      </div>
+    </div>
+
+    <div class="tips">
+      <div class="sidebar-label">Tips</div>
+      <div class="tip"><div class="tip-dot"></div><span>Paste any YouTube URL and click Analyze</span></div>
+      <div class="tip"><div class="tip-dot"></div><span>Ask about specific timestamps or topics</span></div>
+      <div class="tip"><div class="tip-dot"></div><span>Follow-up questions are automatically rewritten for better results</span></div>
+    </div>
+  </aside>
+
+  <!-- ── CHAT AREA ── -->
+  <main class="chat-area" id="chatArea">
+
+    <div class="chat-header">
+      <div>
+        <div class="chat-title">Video Assistant</div>
+        <div class="chat-subtitle" id="chatSubtitle">Analyze a video to begin</div>
+      </div>
+      <div class="session-badge" id="sessionBadge">No session</div>
+    </div>
+
+    <!-- locked / empty -->
+    <div class="chat-locked" id="lockedState">
+      <div class="lock-icon">◎</div>
+      <div class="lock-text">Paste a YouTube URL on the left and click <strong>Analyze Video</strong> to start asking questions.</div>
+    </div>
+
+    <!-- messages container (hidden until session ready) -->
+    <div class="messages" id="messages" style="display:none;"></div>
+
+    <!-- input bar (hidden until session ready) -->
+    <div class="input-bar" id="inputBar" style="display:none;">
+      <div class="input-wrap">
+        <textarea
+          class="chat-input"
+          id="chatInput"
+          placeholder="Ask anything about this video…"
+          rows="1"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Send (Enter)">➤</button>
+      </div>
+      <div class="input-hint">Press Enter to send · Shift+Enter for new line</div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  const API = 'http://127.0.0.1:8000/api';
+  let vId = null, csId = null, isStreaming = false;
+
+  // ── Analyze video ──────────────────────────────────────────────
+  async function analyzeVideo() {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) return;
+
+    setStatus('loading', 'Fetching & indexing transcript…');
+    document.getElementById('analyzeBtn').disabled = true;
+    document.getElementById('videoCard').classList.remove('show');
+
+    try {
+      const res = await fetch(`${API}/transcript/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ youtube_url: url }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Failed to analyze video');
+      }
+      const data = await res.json();
+      vId  = data.v_id;
+      csId = data.cs_id;
+
+      setStatus('success', 'Video indexed — ready to chat!');
+      showVideoCard(vId, csId, url);
+      activateChat(vId, csId);
+
+    } catch (e) {
+      setStatus('error', e.message);
+    } finally {
+      document.getElementById('analyzeBtn').disabled = false;
+    }
+  }
+
+  // ── Chat ───────────────────────────────────────────────────────
+  async function sendMessage(text) {
+    const input = document.getElementById('chatInput');
+    const question = text || input.value.trim();
+    if (!question || isStreaming) return;
+
+    input.value = '';
+    autoResize(input);
+    appendMessage('user', question);
+    isStreaming = true;
+    document.getElementById('sendBtn').disabled = true;
+
+    // typing indicator
+    const typingId = appendTyping();
+
+    try {
+      const res = await fetch(`${API}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cs_id: csId, v_id: vId, user_q: question }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Stream failed');
+      }
+
+      removeTyping(typingId);
+      const msgEl = appendMessage('assistant', '');
+      const bubbleEl = msgEl.querySelector('.bubble');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const chunk = JSON.parse(line);
+            fullText += chunk.assistant_reply;
+            bubbleEl.innerHTML = formatResponse(fullText);
+            scrollBottom();
+          } catch {}
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          const chunk = JSON.parse(buffer);
+          fullText += chunk.assistant_reply;
+          bubbleEl.innerHTML = formatResponse(fullText);
+        } catch {}
+      }
+
+    } catch (e) {
+      removeTyping(typingId);
+      appendMessage('assistant', `⚠ ${e.message}`);
+    } finally {
+      isStreaming = false;
+      document.getElementById('sendBtn').disabled = false;
+      scrollBottom();
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────
+
+  // Configure marked
+  marked.setOptions({
+    breaks: true,       // single newline → <br>
+    gfm: true,          // GitHub-flavoured markdown
+  });
+
+  // Custom renderer: add lang badge to code blocks + timestamp spans
+  const renderer = new marked.Renderer();
+  renderer.code = function(token) {
+    const lang = (token.lang || '').trim();
+    const escaped = token.text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const badge = lang ? `<div class="code-lang-badge">${lang}</div>` : '';
+    return `<div class="code-block-wrap">${badge}<pre><code>${escaped}</code></pre></div>`;
+  };
+  marked.use({ renderer });
+
+  function formatResponse(text) {
+    // Pre-process: protect [MM:SS] timestamps so marked doesn't mangle them
+    const placeholder = text.replace(
+      /\[(\d{2}:\d{2})\]/g,
+      '%%TS_$1%%'
+    );
+    let html = marked.parse(placeholder);
+    // Restore timestamps as styled spans
+    html = html.replace(/%%TS_(\d{2}:\d{2})%%/g, '<span class="ts">[$1]</span>');
+    return html;
+  }
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function appendMessage(role, text) {
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    const isUser = role === 'user';
+    div.innerHTML = `
+      <div class="message-meta">
+        ${isUser ? '' : '<div class="avatar ai">A</div>'}
+        <span>${isUser ? 'You' : 'Askube'}</span>
+        ${isUser ? '<div class="avatar user">U</div>' : ''}
+      </div>
+      <div class="bubble">${isUser ? escapeHtml(text) : formatResponse(text)}</div>
+    `;
+    msgs.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  let typingCounter = 0;
+  function appendTyping() {
+    const id = `typing-${++typingCounter}`;
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.id = id;
+    div.innerHTML = `
+      <div class="message-meta">
+        <div class="avatar ai">A</div><span>Askube</span>
+      </div>
+      <div class="typing-indicator">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+    `;
+    msgs.appendChild(div);
+    scrollBottom();
+    return id;
+  }
+
+  function removeTyping(id) {
+    document.getElementById(id)?.remove();
+  }
+
+  function scrollBottom() {
+    const msgs = document.getElementById('messages');
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function setStatus(type, text) {
+    const bar = document.getElementById('statusBar');
+    const spinner = document.getElementById('statusSpinner');
+    const label = document.getElementById('statusText');
+    bar.className = `status-bar show ${type}`;
+    spinner.style.display = type === 'loading' ? 'block' : 'none';
+    label.textContent = text;
+  }
+
+  function showVideoCard(vid, csid, url) {
+    const card = document.getElementById('videoCard');
+    const thumbMatch = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?]+)/);
+    const thumbId = thumbMatch ? thumbMatch[1] : vid;
+    document.getElementById('videoThumb').src = `https://img.youtube.com/vi/${thumbId}/mqdefault.jpg`;
+    document.getElementById('videoIdDisplay').textContent = vid;
+    document.getElementById('sessionIdDisplay').textContent = csid;
+    card.classList.add('show');
+  }
+
+  function activateChat(vid, csid) {
+    document.getElementById('lockedState').style.display = 'none';
+    document.getElementById('messages').style.display = 'flex';
+    document.getElementById('inputBar').style.display = 'block';
+    document.getElementById('chatSubtitle').textContent = `Video: ${vid}`;
+    document.getElementById('sessionBadge').textContent = `${csid.slice(0, 8)}…`;
+
+    // clear old messages + show empty state with suggestions
+    const msgs = document.getElementById('messages');
+    msgs.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.id = 'emptyState';
+    empty.innerHTML = `
+      <div class="empty-icon">◈</div>
+      <div class="empty-title">Video indexed</div>
+      <div class="empty-desc">Ask anything about this video — topics, timestamps, summaries, speaker intent.</div>
+      <div class="suggestions">
+        <button class="suggestion-chip" onclick="useSuggestion(this)">Summarize this video</button>
+        <button class="suggestion-chip" onclick="useSuggestion(this)">What are the key takeaways?</button>
+        <button class="suggestion-chip" onclick="useSuggestion(this)">Who is speaking in this video?</button>
+        <button class="suggestion-chip" onclick="useSuggestion(this)">What happens at the beginning?</button>
+      </div>
+    `;
+    msgs.appendChild(empty);
+    document.getElementById('chatInput').focus();
+  }
+
+  function useSuggestion(btn) {
+    document.getElementById('emptyState')?.remove();
+    sendMessage(btn.textContent);
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById('emptyState')?.remove();
+      sendMessage();
+    }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  // allow Enter on URL input
+  document.getElementById('urlInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') analyzeVideo();
+  });
+</script>
+</body>
+</html>
